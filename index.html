@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web 3D Horror - Заброшка</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Courier New', Courier, monospace;
+            user-select: none;
+        }
+        #ui, #game-ui {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            z-index: 10;
+        }
+        #ui {
+            top: 40%;
+            color: darkred;
+            text-shadow: 2px 2px 5px black;
+            cursor: pointer;
+        }
+        #game-ui {
+            top: 20px;
+            color: white;
+            display: none;
+            font-size: 1.2rem;
+            text-shadow: 1px 1px 3px black;
+        }
+        #interaction-text {
+            position: absolute;
+            top: 60%;
+            width: 100%;
+            text-align: center;
+            color: yellow;
+            font-size: 1.5rem;
+            display: none;
+            z-index: 10;
+        }
+        h1 { font-size: 3rem; margin-bottom: 10px; }
+        p { font-size: 1.2rem; color: #ddd; }
+        .red { color: red; }
+    </style>
+</head>
+<body>
+    <audio id="bgm" loop>
+        <source src="1.mp4" type="audio/mp4">
+    </audio>
+
+    <div id="ui">
+        <h1>КЛИКНИ, ЧТОБЫ ВОЙТИ ВО ТЬМУ</h1>
+        <p>Управление: WASD - движение, Мышь - осмотреться</p>
+        <p>Почини 3 генератора [ E ], чтобы открыть выход.</p>
+        <p class="red">Он уже ищет тебя.</p>
+    </div>
+
+    <div id="game-ui">
+        Генераторы: <span id="gen-count">0 / 3</span><br>
+        <span id="direction" style="color: #88ff88; font-weight: bold;">Направление: ⬆️ Прямо</span>
+    </div>
+    
+    <div id="interaction-text">[E] Починить генератор</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+        // 1. БАЗОВАЯ НАСТРОЙКА
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x000000);
+        scene.fog = new THREE.FogExp2(0x000000, 0.12);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1.8, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // 2. СВЕТ И ФОНАРИК
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.01);
+        scene.add(ambientLight);
+
+        const flashLight = new THREE.SpotLight(0xffeedd, 2.5, 20, Math.PI / 7, 0.8, 1);
+        flashLight.position.set(0, 0, 0);
+        flashLight.target.position.set(0, 0, -1);
+        flashLight.castShadow = true;
+        camera.add(flashLight);
+        camera.add(flashLight.target);
+        scene.add(camera);
+
+        // 3. ОКРУЖЕНИЕ: ЗАБРОШКА (Стены и пол)
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
+        const floor = new THREE.Mesh(new THREE.PlaneGeometry(120, 120), floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        const wallMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 1 });
+        const walls = new THREE.Group();
+        
+        // Генерация лабиринтообразных стен
+        function createWall(x, z, width, depth) {
+            const wall = new THREE.Mesh(new THREE.BoxGeometry(width, 5, depth), wallMat);
+            wall.position.set(x, 2.5, z);
+            wall.castShadow = true;
+            wall.receiveShadow = true;
+            walls.add(wall);
+        }
+
+        // Внешние стены
+        createWall(0, -60, 120, 1); createWall(0, 60, 120, 1);
+        createWall(-60, 0, 1, 120); createWall(60, 0, 1, 120);
+
+        // Внутренние коридоры
+        for(let i=0; i<15; i++) {
+            let isHorizontal = Math.random() > 0.5;
+            let len = 10 + Math.random() * 20;
+            let px = (Math.random() - 0.5) * 80;
+            let pz = (Math.random() - 0.5) * 80;
+            
+            // Не ставим стены слишком близко к центру (спавн игрока)
+            if(Math.abs(px) < 10 && Math.abs(pz) < 10) continue; 
+            
+            createWall(px, pz, isHorizontal ? len : 1, isHorizontal ? 1 : len);
+        }
+        scene.add(walls);
+
+        // 4. МЕХАНИКА: ГЕНЕРАТОРЫ И ВЫХОД
+        const generators = [];
+        let fixedGenerators = 0;
+        const totalGenerators = 3;
+        
+        const genGeo = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+        const genPositions = [
+            new THREE.Vector3(20, 0.75, -20),
+            new THREE.Vector3(-30, 0.75, 10),
+            new THREE.Vector3(15, 0.75, 30)
+        ];
+
+        genPositions.forEach((pos, index) => {
+            const mat = new THREE.MeshStandardMaterial({ color: 0x550000, emissive: 0x330000 });
+            const gen = new THREE.Mesh(genGeo, mat);
+            gen.position.copy(pos);
+            gen.castShadow = true;
+            gen.receiveShadow = true;
+            
+            // Свет от генератора
+            const light = new THREE.PointLight(0xff0000, 1, 5);
+            gen.add(light);
+            
+            gen.userData = { id: index, fixed: false, light: light };
+            scene.add(gen);
+            generators.push(gen);
+        });
+
+        // Выход (изначально спрятан)
+        const exitGeo = new THREE.BoxGeometry(3, 4, 0.5);
+        const exitMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xaaaaaa, transparent: true, opacity: 0 });
+        const exitDoor = new THREE.Mesh(exitGeo, exitMat);
+        exitDoor.position.set(0, 2, -55);
+        scene.add(exitDoor);
+
+        // 5. ЖУТКИЙ МОНСТР
+        const monster = new THREE.Group();
+        monster.position.set(0, 0, 40); // Появляется сзади
+        
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 1 });
+        const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.2, 3), bodyMat);
+        torso.position.y = 2.5;
+        torso.castShadow = true;
+        monster.add(torso);
+
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.35), bodyMat);
+        head.position.y = 4.2;
+        monster.add(head);
+
+        const armGeo = new THREE.CylinderGeometry(0.08, 0.05, 2.5);
+        const leftArm = new THREE.Mesh(armGeo, bodyMat);
+        leftArm.position.set(-0.6, 2.5, 0);
+        leftArm.rotation.z = Math.PI / 8;
+        monster.add(leftArm);
+        
+        const rightArm = new THREE.Mesh(armGeo, bodyMat);
+        rightArm.position.set(0.6, 2.5, 0);
+        rightArm.rotation.z = -Math.PI / 8;
+        monster.add(rightArm);
+
+        // Глаза
+        const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+        const lEye = new THREE.Mesh(new THREE.SphereGeometry(0.05), eyeMat);
+        lEye.position.set(-0.15, 4.25, 0.3);
+        const rEye = new THREE.Mesh(new THREE.SphereGeometry(0.05), eyeMat);
+        rEye.position.set(0.15, 4.25, 0.3);
+        monster.add(lEye, rEye);
+
+        // Аура монстра (пульсирующий красный свет)
+        const monsterLight = new THREE.PointLight(0xff0000, 2, 8);
+        monsterLight.position.y = 2;
+        monster.add(monsterLight);
+
+        scene.add(monster);
+
+        // 6. УПРАВЛЕНИЕ И UI
+        const controls = new PointerLockControls(camera, document.body);
+        const ui = document.getElementById('ui');
+        const gameUi = document.getElementById('game-ui');
+        const interactionText = document.getElementById('interaction-text');
+        const bgm = document.getElementById('bgm');
+
+        ui.addEventListener('click', () => {
+            controls.lock();
+            bgm.play().catch(e => console.log("Аудио заблокировано браузером до взаимодействия"));
+        });
+
+        controls.addEventListener('lock', () => {
+            ui.style.display = 'none';
+            gameUi.style.display = 'block';
+        });
+
+        controls.addEventListener('unlock', () => {
+            if(ui.style.display !== 'none' && !ui.innerHTML.includes('ПОЙМАН') && !ui.innerHTML.includes('ВЫЖИЛ')) {
+                ui.style.display = 'block';
+                gameUi.style.display = 'none';
+            }
+        });
+
+        const move = { forward: false, backward: false, left: false, right: false, action: false };
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'KeyW') move.forward = true;
+            if (e.code === 'KeyS') move.backward = true;
+            if (e.code === 'KeyA') move.left = true;
+            if (e.code === 'KeyD') move.right = true;
+            if (e.code === 'KeyE') move.action = true;
+        });
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'KeyW') move.forward = false;
+            if (e.code === 'KeyS') move.backward = false;
+            if (e.code === 'KeyA') move.left = false;
+            if (e.code === 'KeyD') move.right = false;
+            if (e.code === 'KeyE') move.action = false;
+        });
+
+        // 7. ИГРОВОЙ ЦИКЛ
+        const clock = new THREE.Clock();
+        const speed = 6.0;
+        let monsterSpeed = 3.5;
+        let gameOver = false;
+
+        function getActiveTarget() {
+            if (fixedGenerators >= totalGenerators) return exitDoor.position;
+            // Ищем ближайший непочиненный генератор
+            let nearest = null;
+            let minDist = Infinity;
+            generators.forEach(g => {
+                if (!g.userData.fixed) {
+                    const dist = camera.position.distanceTo(g.position);
+                    if (dist < minDist) { minDist = dist; nearest = g.position; }
+                }
+            });
+            return nearest;
+        }
+
+        function updateCompass() {
+            const targetPos = getActiveTarget();
+            if (!targetPos) return;
+
+            // Вычисляем угол между взглядом камеры и целью
+            const camDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+            camDir.y = 0; camDir.normalize();
+            
+            const targetDir = new THREE.Vector3().subVectors(targetPos, camera.position);
+            targetDir.y = 0; targetDir.normalize();
+
+            const angle = Math.atan2(camDir.clone().cross(targetDir).y, camDir.dot(targetDir));
+            const degrees = angle * (180 / Math.PI);
+
+            let arrow = "⬆️ Прямо";
+            if (degrees > 20 && degrees <= 160) arrow = "⬅️ Налево";
+            else if (degrees < -20 && degrees >= -160) arrow = "➡️ Направо";
+            else if (Math.abs(degrees) > 160) arrow = "⬇️ Сзади";
+
+            document.getElementById('direction').innerText = `Направление: ${arrow}`;
+        }
+
+        function animate() {
+            if (gameOver) return;
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            if (controls.isLocked) {
+                // Движение игрока
+                const direction = new THREE.Vector3();
+                if (move.forward) direction.z -= 1;
+                if (move.backward) direction.z += 1;
+                if (move.right) direction.x += 1;
+                if (move.left) direction.x -= 1;
+                
+                direction.normalize();
+                
+                // Простая симуляция шагов (покачивание камеры)
+                if(direction.length() > 0.1) {
+                    camera.position.y = 1.8 + Math.sin(time * 10) * 0.05;
+                }
+
+                controls.moveRight(direction.x * speed * delta);
+                controls.moveForward(-direction.z * speed * delta);
+
+                // Ограничение выхода за карту
+                camera.position.x = Math.max(-59, Math.min(59, camera.position.x));
+                camera.position.z = Math.max(-59, Math.min(59, camera.position.z));
+
+                // Логика взаимодействия с генераторами
+                let canInteract = false;
+                generators.forEach(gen => {
+                    if (!gen.userData.fixed && camera.position.distanceTo(gen.position) < 3) {
+                        canInteract = true;
+                        if (move.action) {
+                            gen.userData.fixed = true;
+                            gen.material.color.setHex(0x005500); // Зеленый
+                            gen.material.emissive.setHex(0x003300);
+                            gen.userData.light.color.setHex(0x00ff00);
+                            fixedGenerators++;
+                            document.getElementById('gen-count').innerText = `${fixedGenerators} / ${totalGenerators}`;
+                            monsterSpeed += 0.8; // Монстр ускоряется с каждым генератором
+                            
+                            if (fixedGenerators >= totalGenerators) {
+                                exitDoor.material.opacity = 0.8;
+                                document.getElementById('direction').style.color = "#ffffff";
+                            }
+                        }
+                    }
+                });
+
+                interactionText.style.display = canInteract ? 'block' : 'none';
+                updateCompass();
+
+                // Логика Выхода
+                if (fixedGenerators >= totalGenerators && camera.position.distanceTo(exitDoor.position) < 4) {
+                    gameOver = true;
+                    controls.unlock();
+                    gameUi.style.display = 'none';
+                    ui.innerHTML = "<h1 style='color: white; font-size: 4rem;'>ТЫ ВЫЖИЛ</h1><p>Свет поглотил тьму.</p>";
+                    ui.style.display = 'block';
+                    bgm.pause();
+                }
+
+                // ИИ Монстра: преследование
+                monster.lookAt(camera.position.x, monster.position.y, camera.position.z);
+                monster.translateZ(monsterSpeed * delta);
+                
+                // Анимация монстра (покачивание и пульсация)
+                torso.rotation.z = Math.sin(time * 5) * 0.1;
+                monsterLight.intensity = 2 + Math.sin(time * 8) * 1;
+
+                // Скример / Конец игры
+                if (camera.position.distanceTo(monster.position) < 2.0) {
+                    gameOver = true;
+                    controls.unlock();
+                    gameUi.style.display = 'none';
+                    interactionText.style.display = 'none';
+                    ui.innerHTML = "<h1 style='color: red; font-size: 5rem;'>ПОЙМАН</h1><p>Обновите страницу, чтобы попробовать снова.</p>";
+                    ui.style.display = 'block';
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
