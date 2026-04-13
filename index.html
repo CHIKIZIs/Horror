@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backrooms - The Entity (Hardcore Horror)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; user-select: none; }
+        #ui, #game-ui { position: absolute; width: 100%; text-align: center; z-index: 10; }
+        #ui { top: 40%; color: #e2c044; text-shadow: 2px 2px 4px #000; cursor: pointer; }
+        #game-ui { top: 20px; color: #fff; display: none; font-size: 1.1rem; text-shadow: 1px 1px 2px #000; }
+        #interaction-text { position: absolute; top: 60%; width: 100%; text-align: center; color: #fff; font-size: 1.2rem; display: none; z-index: 10; }
+        h1 { font-size: 3.5rem; margin: 0; }
+        .glitch { color: #ff0000; font-weight: bold; }
+        
+        /* VHS и темнота по краям экрана */
+        .vhs-overlay {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.95) 90%);
+            pointer-events: none; z-index: 5;
+        }
+
+        /* Оверлей для скримера */
+        #jumpscare {
+            display: none; position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            background-image: url('1.png'); background-size: cover; background-position: center;
+            z-index: 999;
+        }
+        
+        /* Глюки экрана при приближении монстра */
+        #screen-container {
+            width: 100vw; height: 100vh; transition: filter 0.1s;
+        }
+    </style>
+</head>
+<body>
+    <audio id="bgm" loop><source src="1.mp4" type="audio/mp4"></audio>
+    <audio id="scream-sound"><source src="1.mp3" type="audio/mpeg"></audio>
+
+    <div class="vhs-overlay"></div>
+    <div id="jumpscare"></div>
+
+    <div id="screen-container">
+        <div id="ui">
+            <h1>BACKROOMS</h1>
+            <p style="color: #ccc;">Карта увеличена. ОНО стало быстрее. Тумана больше нет, только тьма.</p>
+            <p>Найди 5 ключей в тумбах.</p>
+            <p style="color: darkred; font-weight: bold;">Кликни, чтобы начать кошмар...</p>
+        </div>
+        <div id="game-ui">
+            Объекты: <span id="key-count">0 / 5</span>
+        </div>
+        <div id="interaction-text">[ E ] Обыскать</div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+        // --- ГЕНЕРАЦИЯ ТЕКСТУР ---
+        function createBackroomsWall() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512; canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#dbcc87'; ctx.fillRect(0,0,512,512);
+            ctx.strokeStyle = '#c4b36a'; ctx.lineWidth = 2;
+            for(let i=0; i<512; i+=32) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 512); ctx.stroke(); }
+            for(let i=0; i<3000; i++) {
+                ctx.fillStyle = `rgba(100, 90, 50, ${Math.random()*0.15})`;
+                ctx.fillRect(Math.random()*512, Math.random()*512, 4, 4);
+            }
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        function createCarpet() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256; canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#7a6a35'; ctx.fillRect(0,0,256,256);
+            for(let i=0; i<10000; i++) {
+                let v = Math.random() * 20;
+                ctx.fillStyle = `rgb(${110+v}, ${100+v}, ${50+v})`;
+                ctx.fillRect(Math.random()*256, Math.random()*256, 1, 1);
+            }
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(80, 80); // Увеличено для большой карты
+            return tex;
+        }
+
+        // --- СЦЕНА (БЕЗ ТУМАНА) ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050505);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.getElementById('screen-container').appendChild(renderer.domElement);
+
+        // --- ОСВЕЩЕНИЕ ---
+        const ambient = new THREE.AmbientLight(0xfff5d1, 0.02); // Очень тусклый общий свет
+        scene.add(ambient);
+
+        const flashlight = new THREE.SpotLight(0xffffff, 2.0, 40, Math.PI/5, 0.5, 1);
+        camera.add(flashlight);
+        camera.add(flashlight.target);
+        flashlight.target.position.z = -1;
+        scene.add(camera);
+
+        // --- ОГРОМНЫЙ МИР ---
+        const mapSize = 400; // Карта стала в 3 раза больше
+        
+        const wallTex = createBackroomsWall();
+        const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.9 });
+        
+        const floor = new THREE.Mesh(new THREE.PlaneGeometry(mapSize, mapSize), new THREE.MeshStandardMaterial({ map: createCarpet() }));
+        floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
+
+        const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(mapSize, mapSize), new THREE.MeshStandardMaterial({ color: 0x999999, roughness: 1 }));
+        ceiling.position.y = 5; ceiling.rotation.x = Math.PI/2; scene.add(ceiling);
+
+        const walls = new THREE.Group();
+        const wallBoxes = [];
+        function addWall(x, z, w, d) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, 5, d), wallMat);
+            mesh.position.set(x, 2.5, z);
+            walls.add(mesh);
+            wallBoxes.push(new THREE.Box3().setFromObject(mesh));
+        }
+
+        // Внешние границы
+        addWall(0, -mapSize/2, mapSize, 2); addWall(0, mapSize/2, mapSize, 2);
+        addWall(-mapSize/2, 0, 2, mapSize); addWall(mapSize/2, 0, 2, mapSize);
+
+        const lights = [];
+        // Больше стен для большой карты (250 вместо 60)
+        for(let i=0; i<250; i++) {
+            let x = (Math.random()-0.5)*(mapSize - 20);
+            let z = (Math.random()-0.5)*(mapSize - 20);
+            if(Math.abs(x) < 10 && Math.abs(z) < 10) continue; // Зона спавна
+            
+            let isCol = Math.random() > 0.5;
+            let length = 10 + Math.random() * 20;
+            addWall(x, z, isCol ? 2 : length, isCol ? length : 2);
+
+            if(Math.random() > 0.85) {
+                const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.2, 0.8), new THREE.MeshBasicMaterial({ color: 0xffffaa }));
+                lamp.position.set(x, 4.9, z); scene.add(lamp);
+                const pLight = new THREE.PointLight(0xffffee, 0.5, 20);
+                pLight.position.set(x, 4.5, z); scene.add(pLight);
+                lights.push({ light: pLight });
+            }
+        }
+        scene.add(walls);
+
+        // --- ОБЪЕКТЫ (ТУМБЫ) разбросаны по всей огромной карте ---
+        const items = [];
+        let keysFound = 0;
+        for(let i=0; i<20; i++) { // 20 тумб, 5 ключей
+            const box = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.5, 1.2), new THREE.MeshStandardMaterial({ color: 0x333333 }));
+            let x = (Math.random()-0.5)*(mapSize - 30);
+            let z = (Math.random()-0.5)*(mapSize - 30);
+            box.position.set(x, 0.75, z);
+            box.userData = { searched: false, hasKey: i < 5 };
+            scene.add(box); items.push(box);
+            wallBoxes.push(new THREE.Box3().setFromObject(box));
+        }
+
+        // --- МОНСТР ---
+        const monster = new THREE.Group();
+        const mBodyMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+        const mTorso = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.05, 4.5), mBodyMat);
+        mTorso.position.y = 2.25; monster.add(mTorso);
+        const mHead = new THREE.Mesh(new THREE.SphereGeometry(0.4), mBodyMat);
+        mHead.position.y = 4.7; monster.add(mHead);
+        
+        const armGeo = new THREE.CylinderGeometry(0.04, 0.04, 4);
+        const lArm = new THREE.Mesh(armGeo, mBodyMat); lArm.position.set(-0.5, 3, 0); lArm.rotation.z = 0.2;
+        const rArm = new THREE.Mesh(armGeo, mBodyMat); rArm.position.set(0.5, 3, 0); rArm.rotation.z = -0.2;
+        monster.add(lArm, rArm);
+
+        // Светящиеся глаза, видимые издалека
+        const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const e1 = new THREE.Mesh(new THREE.SphereGeometry(0.08), eyeMat); e1.position.set(-0.15, 4.8, 0.35);
+        const e2 = new THREE.Mesh(new THREE.SphereGeometry(0.08), eyeMat); e2.position.set(0.15, 4.8, 0.35);
+        monster.add(e1, e2);
+
+        monster.position.set(60, 0, 60);
+        scene.add(monster);
+
+        // --- ЛОГИКА И УПРАВЛЕНИЕ ---
+        const controls = new PointerLockControls(camera, document.body);
+        const ui = document.getElementById('ui');
+        const screenContainer = document.getElementById('screen-container');
+        const jumpscareDiv = document.getElementById('jumpscare');
+        const screamSound = document.getElementById('scream-sound');
+        
+        let isDead = false;
+
+        ui.addEventListener('click', () => { 
+            controls.lock(); 
+            document.getElementById('bgm').play().catch(()=>{}); 
+        });
+        controls.addEventListener('lock', () => { ui.style.display = 'none'; document.getElementById('game-ui').style.display = 'block'; });
+        controls.addEventListener('unlock', () => { if(keysFound < 5 && !isDead) ui.style.display = 'block'; });
+
+        const keys = {};
+        document.addEventListener('keydown', (e) => keys[e.code] = true);
+        document.addEventListener('keyup', (e) => keys[e.code] = false);
+
+        function checkCollision(pos, radius = 0.8) {
+            const playerBox = new THREE.Box3().setFromCenterAndSize(pos, new THREE.Vector3(radius, 2, radius));
+            for(let wall of wallBoxes) if(playerBox.intersectsBox(wall)) return true;
+            return false;
+        }
+
+        function playJumpscare(duration) {
+            jumpscareDiv.style.display = 'block';
+            screamSound.currentTime = 0;
+            screamSound.play().catch(()=>{});
+            setTimeout(() => { jumpscareDiv.style.display = 'none'; }, duration);
+        }
+
+        const clock = new THREE.Clock();
+        let mSpeed = 8.0; // МОНСТР ОЧЕНЬ БЫСТРЫЙ
+        let randomScareTriggered = false;
+        let monsterUpdateTimer = 0;
+
+        function update() {
+            if(!controls.isLocked || isDead) return;
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            // Рандомный скример (шанс каждую секунду)
+            if(!randomScareTriggered && Math.random() < 0.0002) {
+                randomScareTriggered = true;
+                playJumpscare(1000); // 1 секунда
+            }
+
+            // Движение игрока
+            const dir = new THREE.Vector3();
+            if(keys['KeyW']) dir.z -= 1; if(keys['KeyS']) dir.z += 1;
+            if(keys['KeyA']) dir.x -= 1; if(keys['KeyD']) dir.x += 1;
+            dir.applyQuaternion(camera.quaternion); dir.y = 0; dir.normalize();
+
+            if(dir.length() > 0) {
+                const nextX = camera.position.x + dir.x * 6 * delta;
+                if(!checkCollision(new THREE.Vector3(nextX, 1.7, camera.position.z))) camera.position.x = nextX;
+                const nextZ = camera.position.z + dir.z * 6 * delta;
+                if(!checkCollision(new THREE.Vector3(camera.position.x, 1.7, nextZ))) camera.position.z = nextZ;
+                camera.position.y = 1.7 + Math.sin(time*12)*0.05;
+            }
+
+            // ИИ Монстра (Рваные движения - эффект неестественности)
+            monsterUpdateTimer += delta;
+            monster.lookAt(camera.position.x, 0, camera.position.z);
+            
+            // Монстр двигается рывками (обновляет позицию только раз в 0.1 сек)
+            if (monsterUpdateTimer > 0.1) {
+                const mDir = new THREE.Vector3().subVectors(camera.position, monster.position).normalize();
+                const step = mSpeed * 0.1; // Дистанция за рывок
+                
+                const mNextX = monster.position.x + mDir.x * step;
+                if(!checkCollision(new THREE.Vector3(mNextX, 1, monster.position.z), 1.5)) monster.position.x = mNextX;
+                const mNextZ = monster.position.z + mDir.z * step;
+                if(!checkCollision(new THREE.Vector3(monster.position.x, 1, mNextZ), 1.5)) monster.position.z = mNextZ;
+                
+                monsterUpdateTimer = 0;
+            }
+
+            // Галлюцинации и тряска при приближении
+            const distToMonster = camera.position.distanceTo(monster.position);
+            if (distToMonster < 25) {
+                let intensity = (25 - distToMonster) / 25;
+                // Тряска камеры
+                camera.position.x += (Math.random() - 0.5) * 0.2 * intensity;
+                camera.position.y += (Math.random() - 0.5) * 0.2 * intensity;
+                // Глюки цветов
+                screenContainer.style.filter = `contrast(${1 + intensity}) hue-rotate(${intensity * 90}deg) saturate(${1 - intensity*0.5})`;
+                // Мигание фонарика
+                flashlight.intensity = Math.random() > (intensity * 0.8) ? 2.0 : 0.1;
+            } else {
+                screenContainer.style.filter = "none";
+                flashlight.intensity = 2.0;
+            }
+
+            // Взаимодействие
+            let interact = false;
+            items.forEach(item => {
+                if(!item.userData.searched && camera.position.distanceTo(item.position) < 3.5) {
+                    interact = true;
+                    if(keys['KeyE']) {
+                        item.userData.searched = true;
+                        item.material.color.setHex(0x111111);
+                        if(item.userData.hasKey) {
+                            keysFound++;
+                            document.getElementById('key-count').innerText = `${keysFound} / 5`;
+                            mSpeed += 1.5; // С каждым ключом монстр становится агрессивнее
+                        }
+                        keys['KeyE'] = false;
+                    }
+                }
+            });
+            document.getElementById('interaction-text').style.display = interact ? 'block' : 'none';
+
+            // Смерть со скримером
+            if(distToMonster < 3.0 && !isDead) {
+                isDead = true;
+                controls.unlock();
+                flashlight.intensity = 0; // Резко выключаем свет
+                ambient.intensity = 0;
+                
+                // Скример
+                playJumpscare(3000); // Показываем 3 секунды
+                
+                setTimeout(() => {
+                    ui.innerHTML = "<h1 class='glitch'>ТЫ МЕРТВ</h1><p>Обнови страницу.</p>";
+                    ui.style.display = 'block';
+                    screenContainer.style.filter = "grayscale(100%)";
+                }, 3000);
+            }
+
+            if(keysFound >= 5) {
+                ui.innerHTML = "<h1 style='color: #00ff00'>ТЫ ВЫЖИЛ</h1><p>Выход открыт.</p>";
+                controls.unlock();
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
